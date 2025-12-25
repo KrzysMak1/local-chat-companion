@@ -1,38 +1,45 @@
 import { useRef, useEffect, useState } from 'react';
-import { Chat, Message } from '@/types/chat';
+import { Chat, ChatState } from '@/types/chat';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
-import { Menu, ArrowDown, Bot } from 'lucide-react';
+import { Menu, ArrowDown, Bot, X, Columns } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 
-interface ChatWindowProps {
+interface ChatPanelProps {
   chat: Chat | undefined;
-  isLoading: boolean;
-  streamingContent: string;
+  chatState: ChatState;
   onSendMessage: (content: string) => void;
   onStopGeneration: () => void;
   onDeleteMessage: (messageId: string) => void;
   onRegenerate: () => void;
   onEditAndResend: (messageId: string, newContent: string) => void;
-  onOpenSidebar: () => void;
+  onOpenSidebar?: () => void;
+  onClose?: () => void;
+  onSplitView?: () => void;
+  showSplitButton?: boolean;
+  isSecondary?: boolean;
 }
 
-export const ChatWindow = ({
+export const ChatPanel = ({
   chat,
-  isLoading,
-  streamingContent,
+  chatState,
   onSendMessage,
   onStopGeneration,
   onDeleteMessage,
   onRegenerate,
   onEditAndResend,
   onOpenSidebar,
-}: ChatWindowProps) => {
+  onClose,
+  onSplitView,
+  showSplitButton = false,
+  isSecondary = false,
+}: ChatPanelProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [userScrolled, setUserScrolled] = useState(false);
+
+  const { isLoading, streamingContent } = chatState;
 
   const scrollToBottom = (smooth = true) => {
     messagesEndRef.current?.scrollIntoView({ 
@@ -72,22 +79,54 @@ export const ChatWindow = ({
   const lastAssistantIndex = findLastIndex(messages, m => m.role === 'assistant');
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-background">
+    <div className="flex-1 flex flex-col h-full bg-background relative">
       {/* Header */}
-      <header className="flex items-center gap-3 px-4 py-3 border-b border-border">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="md:hidden"
-          onClick={onOpenSidebar}
-        >
-          <Menu className="w-5 h-5" />
-        </Button>
-        <div className="flex items-center gap-2">
-          <Bot className="w-5 h-5 text-primary" />
-          <h2 className="font-medium truncate">
-            {chat?.title || 'New chat'}
-          </h2>
+      <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border">
+        <div className="flex items-center gap-3">
+          {onOpenSidebar && !isSecondary && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={onOpenSidebar}
+            >
+              <Menu className="w-5 h-5" />
+            </Button>
+          )}
+          <div className="flex items-center gap-2">
+            <Bot className="w-5 h-5 text-primary" />
+            <h2 className="font-medium truncate">
+              {chat?.title || 'New chat'}
+            </h2>
+            {isLoading && (
+              <span className="text-xs text-muted-foreground animate-pulse">
+                generating...
+              </span>
+            )}
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-1">
+          {showSplitButton && onSplitView && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onSplitView}
+              title="Open split view"
+            >
+              <Columns className="w-4 h-4" />
+            </Button>
+          )}
+          {onClose && isSecondary && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              title="Close panel"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          )}
         </div>
       </header>
 

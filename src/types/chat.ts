@@ -15,6 +15,12 @@ export interface Chat {
   archived: boolean;
 }
 
+export interface ChatState {
+  isLoading: boolean;
+  streamingContent: string;
+  abortController: AbortController | null;
+}
+
 export interface MemoryItem {
   id: string;
   content: string;
@@ -40,4 +46,10 @@ export interface Profile {
 export interface AppState {
   currentProfile: string | null;
   profiles: Profile[];
+}
+
+export interface SplitViewState {
+  enabled: boolean;
+  leftChatId: string | null;
+  rightChatId: string | null;
 }
