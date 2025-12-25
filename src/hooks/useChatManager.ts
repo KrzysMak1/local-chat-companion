@@ -1,23 +1,33 @@
 import { useState, useCallback, useRef } from 'react';
-import { Chat, Message, Settings, MemoryItem } from '@/types/chat';
+import { Chat, Message, Settings, MemoryItem, ChatState } from '@/types/chat';
 import { getChats, saveChats, generateId, generateChatTitle } from '@/lib/storage';
 import { sendMessage } from '@/lib/api';
 
-export const useChat = (profileId: string, settings: Settings, memory: MemoryItem[]) => {
+export const useChatManager = (profileId: string, settings: Settings, memory: MemoryItem[]) => {
   const [chats, setChats] = useState<Chat[]>(() => getChats(profileId));
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState('');
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Per-chat state: isLoading, streamingContent, abortController
+  const [chatStates, setChatStates] = useState<Map<string, ChatState>>(new Map());
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
-  const currentChat = chats.find(c => c.id === currentChatId);
+  const getChatState = useCallback((chatId: string): ChatState => {
+    return chatStates.get(chatId) || { isLoading: false, streamingContent: '', abortController: null };
+  }, [chatStates]);
+
+  const updateChatState = useCallback((chatId: string, update: Partial<ChatState>) => {
+    setChatStates(prev => {
+      const newMap = new Map(prev);
+      const current = prev.get(chatId) || { isLoading: false, streamingContent: '', abortController: null };
+      newMap.set(chatId, { ...current, ...update });
+      return newMap;
+    });
+  }, []);
 
   const persistChats = useCallback((newChats: Chat[]) => {
     setChats(newChats);
     saveChats(profileId, newChats);
   }, [profileId]);
 
-  const createNewChat = useCallback(() => {
+  const createNewChat = useCallback((): Chat => {
     const newChat: Chat = {
       id: generateId(),
       title: 'New chat',
@@ -29,22 +39,27 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     };
     const newChats = [newChat, ...chats];
     persistChats(newChats);
-    setCurrentChatId(newChat.id);
     return newChat;
   }, [chats, persistChats]);
 
-  const selectChat = useCallback((chatId: string) => {
-    setCurrentChatId(chatId);
-    setStreamingContent('');
-  }, []);
-
   const deleteChat = useCallback((chatId: string) => {
+    // Stop any ongoing generation
+    const controller = abortControllersRef.current.get(chatId);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(chatId);
+    }
+    
     const newChats = chats.filter(c => c.id !== chatId);
     persistChats(newChats);
-    if (currentChatId === chatId) {
-      setCurrentChatId(newChats[0]?.id || null);
-    }
-  }, [chats, currentChatId, persistChats]);
+    
+    // Clean up state
+    setChatStates(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(chatId);
+      return newMap;
+    });
+  }, [chats, persistChats]);
 
   const renameChat = useCallback((chatId: string, newTitle: string) => {
     const newChats = chats.map(c => 
@@ -76,9 +91,10 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     persistChats(newChats);
   }, [chats, persistChats]);
 
-  const sendUserMessage = useCallback(async (content: string) => {
-    let chat = currentChat;
+  const sendUserMessage = useCallback(async (chatId: string | null, content: string): Promise<string> => {
+    let chat = chatId ? chats.find(c => c.id === chatId) : null;
     let newChats = [...chats];
+    let targetChatId = chatId;
 
     if (!chat) {
       chat = {
@@ -91,7 +107,7 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
         archived: false,
       };
       newChats = [chat, ...newChats];
-      setCurrentChatId(chat.id);
+      targetChatId = chat.id;
     }
 
     const userMessage: Message = {
@@ -115,23 +131,24 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     newChats = newChats.map(c => c.id === chat!.id ? chat! : c);
     persistChats(newChats);
 
-    setIsLoading(true);
-    setStreamingContent('');
-    abortControllerRef.current = new AbortController();
+    // Set up per-chat loading state
+    const abortController = new AbortController();
+    abortControllersRef.current.set(targetChatId!, abortController);
+    updateChatState(targetChatId!, { isLoading: true, streamingContent: '' });
 
     try {
       const response = await sendMessage(
         chat.messages,
         settings,
         memory,
-        (content) => setStreamingContent(content),
-        abortControllerRef.current
+        (content) => updateChatState(targetChatId!, { streamingContent: content }),
+        abortController
       );
 
       const assistantMessage: Message = {
         id: generateId(),
         role: 'assistant',
-        content: response || streamingContent,
+        content: response,
         timestamp: Date.now(),
       };
 
@@ -146,34 +163,39 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     } catch (error) {
       console.error('Error sending message:', error);
     } finally {
-      setIsLoading(false);
-      setStreamingContent('');
-      abortControllerRef.current = null;
+      updateChatState(targetChatId!, { isLoading: false, streamingContent: '' });
+      abortControllersRef.current.delete(targetChatId!);
     }
-  }, [currentChat, chats, settings, memory, persistChats, streamingContent]);
 
-  const stopGeneration = useCallback(() => {
-    abortControllerRef.current?.abort();
-    setIsLoading(false);
-    setStreamingContent('');
-  }, []);
+    return targetChatId!;
+  }, [chats, settings, memory, persistChats, updateChatState]);
 
-  const regenerateLastResponse = useCallback(async () => {
-    if (!currentChat || currentChat.messages.length < 2) return;
+  const stopGeneration = useCallback((chatId: string) => {
+    const controller = abortControllersRef.current.get(chatId);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(chatId);
+    }
+    updateChatState(chatId, { isLoading: false, streamingContent: '' });
+  }, [updateChatState]);
+
+  const regenerateLastResponse = useCallback(async (chatId: string) => {
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat || chat.messages.length < 2) return;
 
     // Find last assistant message index
     let lastAssistantIndex = -1;
-    for (let i = currentChat.messages.length - 1; i >= 0; i--) {
-      if (currentChat.messages[i].role === 'assistant') {
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      if (chat.messages[i].role === 'assistant') {
         lastAssistantIndex = i;
         break;
       }
     }
     if (lastAssistantIndex === -1) return;
 
-    const messagesWithoutLast = currentChat.messages.slice(0, lastAssistantIndex);
+    const messagesWithoutLast = chat.messages.slice(0, lastAssistantIndex);
     const updatedChat = {
-      ...currentChat,
+      ...chat,
       messages: messagesWithoutLast,
       updatedAt: Date.now(),
     };
@@ -181,17 +203,17 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     const newChats = chats.map(c => c.id === updatedChat.id ? updatedChat : c);
     persistChats(newChats);
 
-    setIsLoading(true);
-    setStreamingContent('');
-    abortControllerRef.current = new AbortController();
+    const abortController = new AbortController();
+    abortControllersRef.current.set(chatId, abortController);
+    updateChatState(chatId, { isLoading: true, streamingContent: '' });
 
     try {
       const response = await sendMessage(
         messagesWithoutLast,
         settings,
         memory,
-        (content) => setStreamingContent(content),
-        abortControllerRef.current
+        (content) => updateChatState(chatId, { streamingContent: content }),
+        abortController
       );
 
       const assistantMessage: Message = {
@@ -212,27 +234,27 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     } catch (error) {
       console.error('Error regenerating:', error);
     } finally {
-      setIsLoading(false);
-      setStreamingContent('');
-      abortControllerRef.current = null;
+      updateChatState(chatId, { isLoading: false, streamingContent: '' });
+      abortControllersRef.current.delete(chatId);
     }
-  }, [currentChat, chats, settings, memory, persistChats]);
+  }, [chats, settings, memory, persistChats, updateChatState]);
 
-  const editAndResend = useCallback(async (messageId: string, newContent: string) => {
-    if (!currentChat) return;
+  const editAndResend = useCallback(async (chatId: string, messageId: string, newContent: string) => {
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat) return;
 
-    const messageIndex = currentChat.messages.findIndex(m => m.id === messageId);
-    if (messageIndex === -1 || currentChat.messages[messageIndex].role !== 'user') return;
+    const messageIndex = chat.messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1 || chat.messages[messageIndex].role !== 'user') return;
 
-    const messagesUpToEdit = currentChat.messages.slice(0, messageIndex);
+    const messagesUpToEdit = chat.messages.slice(0, messageIndex);
     const editedMessage: Message = {
-      ...currentChat.messages[messageIndex],
+      ...chat.messages[messageIndex],
       content: newContent,
       timestamp: Date.now(),
     };
 
     const updatedChat = {
-      ...currentChat,
+      ...chat,
       messages: [...messagesUpToEdit, editedMessage],
       updatedAt: Date.now(),
     };
@@ -240,17 +262,17 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     const newChats = chats.map(c => c.id === updatedChat.id ? updatedChat : c);
     persistChats(newChats);
 
-    setIsLoading(true);
-    setStreamingContent('');
-    abortControllerRef.current = new AbortController();
+    const abortController = new AbortController();
+    abortControllersRef.current.set(chatId, abortController);
+    updateChatState(chatId, { isLoading: true, streamingContent: '' });
 
     try {
       const response = await sendMessage(
         updatedChat.messages,
         settings,
         memory,
-        (content) => setStreamingContent(content),
-        abortControllerRef.current
+        (content) => updateChatState(chatId, { streamingContent: content }),
+        abortController
       );
 
       const assistantMessage: Message = {
@@ -271,13 +293,12 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     } catch (error) {
       console.error('Error editing and resending:', error);
     } finally {
-      setIsLoading(false);
-      setStreamingContent('');
-      abortControllerRef.current = null;
+      updateChatState(chatId, { isLoading: false, streamingContent: '' });
+      abortControllersRef.current.delete(chatId);
     }
-  }, [currentChat, chats, settings, memory, persistChats]);
+  }, [chats, settings, memory, persistChats, updateChatState]);
 
-  const importChat = useCallback((chatData: Chat) => {
+  const importChat = useCallback((chatData: Chat): string => {
     const newChat = {
       ...chatData,
       id: generateId(),
@@ -286,17 +307,18 @@ export const useChat = (profileId: string, settings: Settings, memory: MemoryIte
     };
     const newChats = [newChat, ...chats];
     persistChats(newChats);
-    setCurrentChatId(newChat.id);
+    return newChat.id;
   }, [chats, persistChats]);
+
+  const getChat = useCallback((chatId: string): Chat | undefined => {
+    return chats.find(c => c.id === chatId);
+  }, [chats]);
 
   return {
     chats,
-    currentChat,
-    currentChatId,
-    isLoading,
-    streamingContent,
+    getChat,
+    getChatState,
     createNewChat,
-    selectChat,
     deleteChat,
     renameChat,
     togglePinChat,
