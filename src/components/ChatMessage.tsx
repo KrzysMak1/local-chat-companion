@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Message } from '@/types/chat';
+import { Message, MessageContent } from '@/types/chat';
 import { 
   Copy, 
   Check, 
@@ -22,6 +22,21 @@ interface ChatMessageProps {
   onEditAndResend?: (newContent: string) => void;
 }
 
+// Helper to extract text content from message
+const getTextContent = (content: string | MessageContent[]): string => {
+  if (typeof content === 'string') return content;
+  const textItem = content.find(c => c.type === 'text');
+  return textItem?.text || '';
+};
+
+// Helper to extract image URL from message
+const getImageUrl = (message: Message): string | null => {
+  if (message.image_url) return message.image_url;
+  if (typeof message.content === 'string') return null;
+  const imageItem = message.content.find(c => c.type === 'image_url');
+  return imageItem?.image_url?.url || null;
+};
+
 export const ChatMessage = ({
   message,
   isLast,
@@ -32,10 +47,13 @@ export const ChatMessage = ({
 }: ChatMessageProps) => {
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editContent, setEditContent] = useState(message.content);
+  const [editContent, setEditContent] = useState(getTextContent(message.content));
+
+  const textContent = getTextContent(message.content);
+  const imageUrl = getImageUrl(message);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(message.content);
+    await navigator.clipboard.writeText(textContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -88,7 +106,7 @@ export const ChatMessage = ({
                     variant="outline"
                     onClick={() => {
                       setIsEditing(false);
-                      setEditContent(message.content);
+                      setEditContent(textContent);
                     }}
                   >
                     Cancel
@@ -100,9 +118,23 @@ export const ChatMessage = ({
                 "prose prose-invert max-w-none text-foreground",
                 isUser ? "chat-message-user" : "chat-message-assistant"
               )}>
-                <p className="whitespace-pre-wrap break-words m-0">
-                  {message.content}
-                </p>
+                {/* Text content */}
+                {textContent && (
+                  <p className="whitespace-pre-wrap break-words m-0">
+                    {textContent}
+                  </p>
+                )}
+
+                {/* Image content */}
+                {imageUrl && (
+                  <div className="mt-2">
+                    <img
+                      src={imageUrl}
+                      alt="Attached image"
+                      className="max-w-sm max-h-64 rounded-lg border border-border object-contain"
+                    />
+                  </div>
+                )}
               </div>
             )}
 

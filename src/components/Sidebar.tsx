@@ -42,6 +42,8 @@ interface SidebarProps {
   onImportChat: (chat: Chat) => void;
   isOpen: boolean;
   onClose: () => void;
+  onLogout?: () => void;
+  username?: string;
 }
 
 const groupChatsByDate = (chats: Chat[]) => {
@@ -92,6 +94,8 @@ export const Sidebar = ({
   onImportChat,
   isOpen,
   onClose,
+  onLogout,
+  username,
 }: SidebarProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
@@ -102,7 +106,11 @@ export const Sidebar = ({
     const query = searchQuery.toLowerCase();
     return chats.filter(chat => 
       chat.title.toLowerCase().includes(query) ||
-      chat.messages.some(m => m.content.toLowerCase().includes(query))
+      chat.messages.some(m => {
+        const content = typeof m.content === 'string' ? m.content : 
+          m.content.find(c => c.type === 'text')?.text || '';
+        return content.toLowerCase().includes(query);
+      })
     );
   }, [chats, searchQuery]);
 

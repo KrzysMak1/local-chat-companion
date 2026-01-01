@@ -1,23 +1,24 @@
-import { useState, useEffect } from 'react';
-import { Settings as SettingsType, MemoryItem, Profile, AppState, SplitViewState } from '@/types/chat';
+import { useState, useEffect, useCallback } from 'react';
+import { Settings as SettingsType, MemoryItem, User, SplitViewState } from '@/types/chat';
 import { 
   getSettings, 
   saveSettings, 
   getMemory, 
   saveMemory,
-  getAppState,
-  saveAppState,
   defaultSettings
 } from '@/lib/storage';
-import { useChatManager } from '@/hooks/useChatManager';
+import { authApi } from '@/lib/backendApi';
+import { useBackendChatManager } from '@/hooks/useBackendChatManager';
+import { AuthScreen } from './AuthScreen';
 import { Sidebar } from './Sidebar';
 import { SplitChatView } from './SplitChatView';
 import { SettingsModal } from './SettingsModal';
 import { MemoryModal } from './MemoryModal';
-import { ProfileSelector } from './ProfileSelector';
+import { Loader2 } from 'lucide-react';
 
 export const ChatApp = () => {
-  const [appState, setAppState] = useState<AppState>(getAppState);
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [settings, setSettings] = useState<SettingsType>(defaultSettings);
   const [memory, setMemory] = useState<MemoryItem[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -29,94 +30,85 @@ export const ChatApp = () => {
     rightChatId: null,
   });
 
-  const profileId = appState.currentProfile;
-
   // Initialize theme
   useEffect(() => {
     document.documentElement.classList.add('dark');
   }, []);
 
-  // Load profile data
+  // Check auth on mount
   useEffect(() => {
-    if (profileId) {
-      const loadedSettings = getSettings(profileId);
-      setSettings(loadedSettings);
-      setMemory(getMemory(profileId));
-      document.documentElement.classList.toggle('dark', loadedSettings.theme === 'dark');
-    }
-  }, [profileId]);
-
-  const chatManager = useChatManager(profileId || '', settings, memory);
-
-  const handleSelectProfile = (id: string) => {
-    const newState = { ...appState, currentProfile: id };
-    setAppState(newState);
-    saveAppState(newState);
-    // Reset split state when changing profile
-    setSplitState({ enabled: false, leftChatId: null, rightChatId: null });
-  };
-
-  const handleCreateProfile = (profile: Profile) => {
-    const newState = {
-      profiles: [...appState.profiles, profile],
-      currentProfile: profile.id,
-    };
-    setAppState(newState);
-    saveAppState(newState);
-  };
-
-  const handleDeleteProfile = (id: string) => {
-    const newState = {
-      ...appState,
-      profiles: appState.profiles.filter(p => p.id !== id),
-      currentProfile: appState.currentProfile === id ? null : appState.currentProfile,
-    };
-    setAppState(newState);
-    saveAppState(newState);
-    // Clean up localStorage for deleted profile
-    Object.keys(localStorage).forEach(key => {
-      if (key.includes(id)) {
-        localStorage.removeItem(key);
+    const checkAuth = async () => {
+      try {
+        const currentUser = await authApi.getMe();
+        setUser(currentUser);
+        if (currentUser) {
+          // Load user settings from localStorage (keyed by user id)
+          const loadedSettings = getSettings(currentUser.id);
+          setSettings(loadedSettings);
+          setMemory(getMemory(currentUser.id));
+          document.documentElement.classList.toggle('dark', loadedSettings.theme === 'dark');
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      } finally {
+        setIsAuthLoading(false);
       }
-    });
-  };
+    };
+    checkAuth();
+  }, []);
+
+  const chatManager = useBackendChatManager(settings, memory);
+
+  const handleAuthSuccess = useCallback((loggedInUser: User) => {
+    setUser(loggedInUser);
+    const loadedSettings = getSettings(loggedInUser.id);
+    setSettings(loadedSettings);
+    setMemory(getMemory(loggedInUser.id));
+    document.documentElement.classList.toggle('dark', loadedSettings.theme === 'dark');
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await authApi.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+    setUser(null);
+    setSplitState({ enabled: false, leftChatId: null, rightChatId: null });
+  }, []);
 
   const handleSaveSettings = (newSettings: SettingsType) => {
-    if (profileId) {
+    if (user) {
       setSettings(newSettings);
-      saveSettings(profileId, newSettings);
+      saveSettings(user.id, newSettings);
+      // Also save backend URL to localStorage for API calls
+      localStorage.setItem('backend_url', newSettings.backendUrl);
       document.documentElement.classList.toggle('dark', newSettings.theme === 'dark');
     }
   };
 
   const handleSaveMemory = (newMemory: MemoryItem[]) => {
-    if (profileId) {
+    if (user) {
       setMemory(newMemory);
-      saveMemory(profileId, newMemory);
+      saveMemory(user.id, newMemory);
     }
   };
 
-  const handleLogout = () => {
-    const newState = { ...appState, currentProfile: null };
-    setAppState(newState);
-    saveAppState(newState);
-    setSplitState({ enabled: false, leftChatId: null, rightChatId: null });
-  };
-
-  const handleSelectChat = (chatId: string) => {
+  const handleSelectChat = async (chatId: string) => {
+    // Load full chat with messages
+    await chatManager.loadChatMessages(chatId);
     setSplitState(prev => ({ ...prev, leftChatId: chatId }));
     setIsSidebarOpen(false);
   };
 
-  const handleNewChat = () => {
-    const newChat = chatManager.createNewChat();
+  const handleNewChat = async () => {
+    const newChat = await chatManager.createNewChat();
     setSplitState(prev => ({ ...prev, leftChatId: newChat.id }));
     setIsSidebarOpen(false);
   };
 
-  const handleDeleteChat = (chatId: string) => {
-    chatManager.deleteChat(chatId);
-    // Update split state if deleted chat was open
+  const handleDeleteChat = async (chatId: string) => {
+    await chatManager.deleteChat(chatId);
     setSplitState(prev => ({
       ...prev,
       leftChatId: prev.leftChatId === chatId ? null : prev.leftChatId,
@@ -124,16 +116,18 @@ export const ChatApp = () => {
     }));
   };
 
-  // Show profile selector if no profile selected
-  if (!profileId) {
+  // Show loading spinner while checking auth
+  if (isAuthLoading) {
     return (
-      <ProfileSelector
-        profiles={appState.profiles}
-        onSelectProfile={handleSelectProfile}
-        onCreateProfile={handleCreateProfile}
-        onDeleteProfile={handleDeleteProfile}
-      />
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
     );
+  }
+
+  // Show auth screen if not logged in
+  if (!user) {
+    return <AuthScreen onAuthSuccess={handleAuthSuccess} />;
   }
 
   return (
@@ -149,12 +143,14 @@ export const ChatApp = () => {
         onToggleArchive={chatManager.toggleArchiveChat}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenMemory={() => setIsMemoryOpen(true)}
-        onImportChat={(chat) => {
-          const newChatId = chatManager.importChat(chat);
+        onImportChat={async (chat) => {
+          const newChatId = await chatManager.importChat(chat);
           setSplitState(prev => ({ ...prev, leftChatId: newChatId }));
         }}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
+        onLogout={handleLogout}
+        username={user.username}
       />
 
       <SplitChatView
@@ -169,6 +165,7 @@ export const ChatApp = () => {
         onOpenSidebar={() => setIsSidebarOpen(true)}
         onCreateNewChat={chatManager.createNewChat}
         onUpdateSplitState={setSplitState}
+        onLoadChat={chatManager.loadChatMessages}
       />
 
       <SettingsModal
@@ -176,7 +173,7 @@ export const ChatApp = () => {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
-        profileId={profileId}
+        profileId={user.id}
       />
 
       <MemoryModal
