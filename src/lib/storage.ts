@@ -7,7 +7,8 @@ export const defaultSettings: Settings = {
   temperature: 0.7,
   maxTokens: 2048,
   streamingEnabled: true,
-  baseUrl: 'http://127.0.0.1:8080',
+  baseUrl: 'http://127.0.0.1:8081',
+  backendUrl: 'http://localhost:8000',
   useMemory: true,
   theme: 'dark',
 };

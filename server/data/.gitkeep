@@ -1,0 +1,4 @@
+# This directory stores user data
+# users.json - user accounts
+# sessions.json - active sessions
+# chats/<user_id>.json - chat history per user

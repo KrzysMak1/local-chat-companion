@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
-import { Chat, ChatState } from '@/types/chat';
+import { Chat, ChatState, MessageContent } from '@/types/chat';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { Menu, ArrowDown, Bot, X, Columns } from 'lucide-react';
@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 interface ChatPanelProps {
   chat: Chat | undefined;
   chatState: ChatState;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string, imageDataUrl?: string) => void;
   onStopGeneration: () => void;
   onDeleteMessage: (messageId: string) => void;
   onRegenerate: () => void;
@@ -144,7 +144,7 @@ export const ChatPanel = ({
               </div>
               <h3 className="text-xl font-semibold mb-2">How can I help you today?</h3>
               <p className="text-muted-foreground">
-                Start a conversation by typing a message below.
+                Start a conversation by typing a message below. You can also attach images!
               </p>
             </div>
           </div>
