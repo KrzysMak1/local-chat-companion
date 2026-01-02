@@ -14,14 +14,15 @@ interface SplitChatViewProps {
   chats: Chat[];
   splitState: SplitViewState;
   getChatState: (chatId: string) => ChatState;
-  onSendMessage: (chatId: string | null, content: string) => Promise<string>;
+  onSendMessage: (chatId: string | null, content: string, imageDataUrl?: string) => Promise<string>;
   onStopGeneration: (chatId: string) => void;
-  onDeleteMessage: (chatId: string, messageId: string) => void;
+  onDeleteMessage: (chatId: string, messageId: string) => Promise<void>;
   onRegenerate: (chatId: string) => void;
   onEditAndResend: (chatId: string, messageId: string, newContent: string) => void;
   onOpenSidebar: () => void;
-  onCreateNewChat: () => Chat;
+  onCreateNewChat: () => Promise<Chat>;
   onUpdateSplitState: (state: SplitViewState) => void;
+  onLoadChat: (chatId: string) => Promise<Chat | null>;
 }
 
 export const SplitChatView = ({
@@ -36,6 +37,7 @@ export const SplitChatView = ({
   onOpenSidebar,
   onCreateNewChat,
   onUpdateSplitState,
+  onLoadChat,
 }: SplitChatViewProps) => {
   const leftChat = splitState.leftChatId ? chats.find(c => c.id === splitState.leftChatId) : undefined;
   const rightChat = splitState.rightChatId ? chats.find(c => c.id === splitState.rightChatId) : undefined;
@@ -48,15 +50,15 @@ export const SplitChatView = ({
     ? getChatState(splitState.rightChatId) 
     : { isLoading: false, streamingContent: '', abortController: null };
 
-  const handleLeftSend = async (content: string) => {
-    const chatId = await onSendMessage(splitState.leftChatId, content);
+  const handleLeftSend = async (content: string, imageDataUrl?: string) => {
+    const chatId = await onSendMessage(splitState.leftChatId, content, imageDataUrl);
     if (!splitState.leftChatId) {
       onUpdateSplitState({ ...splitState, leftChatId: chatId });
     }
   };
 
-  const handleRightSend = async (content: string) => {
-    const chatId = await onSendMessage(splitState.rightChatId, content);
+  const handleRightSend = async (content: string, imageDataUrl?: string) => {
+    const chatId = await onSendMessage(splitState.rightChatId, content, imageDataUrl);
     if (!splitState.rightChatId) {
       onUpdateSplitState({ ...splitState, rightChatId: chatId });
     }
@@ -77,9 +79,14 @@ export const SplitChatView = ({
     onUpdateSplitState({ ...splitState, rightChatId: chatId });
   };
 
-  const handleCreateNewRightChat = () => {
-    const newChat = onCreateNewChat();
+  const handleCreateNewRightChat = async () => {
+    const newChat = await onCreateNewChat();
     onUpdateSplitState({ ...splitState, rightChatId: newChat.id });
+  };
+
+  const handleSelectRightChatWithLoad = async (chatId: string) => {
+    await onLoadChat(chatId);
+    onUpdateSplitState({ ...splitState, rightChatId: chatId });
   };
 
   // Single panel mode
@@ -160,7 +167,7 @@ export const SplitChatView = ({
                     .map(chat => (
                       <DropdownMenuItem 
                         key={chat.id}
-                        onClick={() => handleSelectRightChat(chat.id)}
+                        onClick={() => handleSelectRightChatWithLoad(chat.id)}
                       >
                         {chat.title}
                       </DropdownMenuItem>

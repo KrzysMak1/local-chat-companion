@@ -15,7 +15,9 @@ import {
   Upload,
   MoreHorizontal,
   BookOpen,
-  X
+  X,
+  LogOut,
+  User
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,6 +26,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { exportChat } from '@/lib/storage';
@@ -355,6 +358,37 @@ export const Sidebar = ({
             <Settings className="w-4 h-4" />
             Settings
           </Button>
+          
+          {/* User section with logout */}
+          {username && (
+            <div className="pt-2 mt-2 border-t border-sidebar-border">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button 
+                    variant="ghost" 
+                    className="w-full justify-start gap-2 text-sidebar-foreground hover:bg-sidebar-accent"
+                  >
+                    <User className="w-4 h-4" />
+                    <span className="truncate flex-1 text-left">{username}</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-48">
+                  <DropdownMenuItem disabled className="text-muted-foreground">
+                    <User className="w-4 h-4 mr-2" />
+                    {username}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem 
+                    onClick={onLogout}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Logout
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
         </div>
       </aside>
     </>
