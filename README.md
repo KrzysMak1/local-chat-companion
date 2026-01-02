@@ -1,73 +1,222 @@
-# Welcome to your Lovable project
+# Local Chat Companion
 
-## Project info
+A privacy-focused chat application that connects to your local AI server (llama.cpp) with support for multiple chats, image uploads, and server-side authentication.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Features
 
-## How can I edit this code?
+- **Server-side authentication**: Secure login with bcrypt password hashing
+- **Multiple chats**: Create and manage multiple conversations
+- **Split view**: Open two chats side-by-side for parallel conversations
+- **Image support**: Upload images and get AI analysis (requires vision-capable model)
+- **Multi-tab support**: Work across multiple browser tabs with the same account
+- **Offline-first**: Works entirely locally without internet connection
+- **ChatGPT-like UI**: Familiar interface with sidebar, chat history, and settings
 
-There are several ways of editing your application.
+## Prerequisites
 
-**Use Lovable**
+- **Node.js 18+** for the frontend
+- **Python 3.10+** for the backend
+- **llama.cpp server** running with OpenAI-compatible API
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+## Quick Start
 
-Changes made via Lovable will be committed automatically to this repo.
+### 1. Start llama.cpp Server
 
-**Use your preferred IDE**
+```bash
+# Example with llama.cpp server
+./llama-server -m your-model.gguf --port 8081 --host 127.0.0.1
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+# For vision models (image support)
+./llama-server -m llava-model.gguf --mmproj mmproj-model.gguf --port 8081
+```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+The server should be accessible at `http://127.0.0.1:8081`.
 
-Follow these steps:
+### 2. Start the Python Backend
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+```bash
+cd server
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Step 3: Install the necessary dependencies.
-npm i
+# Install dependencies
+pip install -r requirements.txt
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Configure environment (optional)
+cp .env.example .env
+# Edit .env to customize LLAMA_BASE_URL, JWT_SECRET, etc.
+
+# Run the backend
+uvicorn main:app --reload --port 8000
+```
+
+The backend API will be available at `http://localhost:8000`.
+
+### 3. Start the Frontend
+
+```bash
+# In the project root directory
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The frontend will be available at `http://localhost:8080` (or the port shown in terminal).
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### 4. Create an Account and Start Chatting
 
-**Use GitHub Codespaces**
+1. Open the frontend URL in your browser
+2. Click "Register" to create a new account
+3. Log in with your credentials
+4. Start a new chat and begin conversing!
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## Configuration
 
-## What technologies are used for this project?
+### Backend Environment Variables
 
-This project is built with:
+Create a `.env` file in the `/server` directory:
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+```env
+# llama.cpp server URL
+LLAMA_BASE_URL=http://127.0.0.1:8081
 
-## How can I deploy this project?
+# JWT secret for authentication (change in production!)
+JWT_SECRET=your-super-secret-jwt-key-change-this
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+# Token expiration in hours
+TOKEN_EXPIRY_HOURS=24
+```
 
-## Can I connect a custom domain to my Lovable project?
+### Frontend Settings
 
-Yes, you can!
+In the app, click the **Settings** icon in the sidebar to configure:
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+- **Backend URL**: URL of the Python backend (default: `http://localhost:8000`)
+- **Temperature**: AI response creativity (0.0 - 2.0)
+- **Max Tokens**: Maximum response length
+- **Streaming**: Enable/disable streaming responses
+- **Model**: Select the model to use (if multiple available)
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│    Frontend     │────▶│  Python Backend │────▶│  llama.cpp      │
+│    (React)      │     │    (FastAPI)    │     │    Server       │
+│                 │◀────│                 │◀────│                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+     :8080                    :8000                   :8081
+```
+
+- **Frontend**: React + Vite + Tailwind CSS
+- **Backend**: Python FastAPI with JWT auth
+- **AI Server**: llama.cpp with OpenAI-compatible API
+
+## API Endpoints
+
+### Authentication
+
+| Method | Endpoint          | Description           |
+|--------|-------------------|-----------------------|
+| POST   | `/auth/register`  | Create new account    |
+| POST   | `/auth/login`     | Login and get token   |
+| POST   | `/auth/logout`    | Logout (clears token) |
+| GET    | `/auth/me`        | Get current user info |
+
+### Chats
+
+| Method | Endpoint                        | Description              |
+|--------|---------------------------------|--------------------------|
+| GET    | `/chats`                        | List all user's chats    |
+| POST   | `/chats`                        | Create new chat          |
+| GET    | `/chats/{id}`                   | Get chat with messages   |
+| PUT    | `/chats/{id}`                   | Update chat (title, etc) |
+| DELETE | `/chats/{id}`                   | Delete chat              |
+| POST   | `/chats/{id}/messages`          | Add message to chat      |
+| DELETE | `/chats/{id}/messages/{msg_id}` | Delete a message         |
+
+### AI Proxy
+
+| Method | Endpoint    | Description                      |
+|--------|-------------|----------------------------------|
+| POST   | `/api/chat` | Send message, get AI response    |
+
+## Image Support
+
+To use image analysis:
+
+1. Run a vision-capable model (e.g., LLaVA, Obsidian)
+2. Click the 📎 (paperclip) icon in the chat input
+3. Select an image (PNG, JPG, WEBP, GIF - max 10MB)
+4. Add your question and send
+
+The image is sent as base64 to the backend, which forwards it to llama.cpp in OpenAI vision format.
+
+## Troubleshooting
+
+### CORS Errors
+
+If you see CORS errors in the browser console:
+
+1. Make sure the backend is running on port 8000
+2. Check that frontend URL is in the backend's CORS origins
+3. Try clearing browser cache and reloading
+
+### "Failed to fetch" or Connection Refused
+
+1. Verify the backend is running: `curl http://localhost:8000/health`
+2. Verify llama.cpp is running: `curl http://127.0.0.1:8081/v1/models`
+3. Check firewall settings if on Windows
+
+### No Response from AI
+
+1. Check llama.cpp server logs for errors
+2. Verify the model is loaded correctly
+3. Try reducing `max_tokens` in settings
+4. Check if streaming is causing issues (try disabling it)
+
+### Authentication Issues
+
+1. Clear localStorage in browser dev tools
+2. Delete `server/data/sessions.json` and restart backend
+3. Re-register a new account
+
+### Port Already in Use
+
+```bash
+# Find process using port 8000
+lsof -i :8000  # macOS/Linux
+netstat -ano | findstr :8000  # Windows
+
+# Kill the process or use a different port
+uvicorn main:app --port 8001
+```
+
+## Data Storage
+
+All data is stored locally:
+
+- **Users**: `server/data/users.json` (passwords are bcrypt hashed)
+- **Sessions**: `server/data/sessions.json`
+- **Chats**: `server/data/chats/{user_id}.json`
+
+To reset all data, delete the contents of `server/data/` (keep `.gitkeep`).
+
+## Security Notes
+
+- Passwords are hashed with bcrypt (never stored in plain text)
+- JWT tokens are used for session management
+- All API endpoints require authentication (except `/auth/register` and `/auth/login`)
+- CORS is configured for localhost only by default
+
+For production use:
+1. Change `JWT_SECRET` to a strong random value
+2. Use HTTPS
+3. Configure proper CORS origins
+4. Consider adding rate limiting
+
+## License
+
+MIT
