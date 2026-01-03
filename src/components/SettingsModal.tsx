@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Settings } from '@/types/chat';
-import { checkHealth, } from '@/lib/api';
 import { exportAllData, importAllData } from '@/lib/storage';
+import { checkBackendHealth, checkLlamaHealth } from '@/lib/backendApi';
 import {
   Dialog,
   DialogContent,
@@ -23,9 +23,10 @@ import {
   Upload,
   Sun,
   Moon,
-  Server
+  Server,
+  Cpu
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -43,13 +44,31 @@ export const SettingsModal = ({
   profileId,
 }: SettingsModalProps) => {
   const [localSettings, setLocalSettings] = useState(settings);
-  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [backendStatus, setBackendStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [llamaStatus, setLlamaStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
 
-  const handleTestConnection = async () => {
-    setConnectionStatus('testing');
-    const isHealthy = await checkHealth(localSettings.baseUrl);
-    setConnectionStatus(isHealthy ? 'success' : 'error');
-    setTimeout(() => setConnectionStatus('idle'), 3000);
+  const handleTestBackend = async () => {
+    setBackendStatus('testing');
+    const isHealthy = await checkBackendHealth();
+    setBackendStatus(isHealthy ? 'success' : 'error');
+    if (isHealthy) {
+      toast.success('Backend connected');
+    } else {
+      toast.error('Cannot connect to backend');
+    }
+    setTimeout(() => setBackendStatus('idle'), 3000);
+  };
+
+  const handleTestLlama = async () => {
+    setLlamaStatus('testing');
+    const isHealthy = await checkLlamaHealth();
+    setLlamaStatus(isHealthy ? 'success' : 'error');
+    if (isHealthy) {
+      toast.success('AI server connected');
+    } else {
+      toast.error('Cannot connect to AI server');
+    }
+    setTimeout(() => setLlamaStatus('idle'), 3000);
   };
 
   const handleSave = () => {
@@ -158,27 +177,50 @@ export const SettingsModal = ({
           </TabsContent>
 
           <TabsContent value="model" className="space-y-6 mt-4">
-            {/* Base URL */}
+            {/* Backend URL */}
             <div className="space-y-2">
-              <Label htmlFor="baseUrl">Server URL</Label>
+              <Label htmlFor="backendUrl">Backend URL</Label>
               <div className="flex gap-2">
                 <Input
-                  id="baseUrl"
-                  value={localSettings.baseUrl}
-                  onChange={(e) => setLocalSettings({ ...localSettings, baseUrl: e.target.value })}
-                  placeholder="http://127.0.0.1:8080"
+                  id="backendUrl"
+                  value={localSettings.backendUrl}
+                  onChange={(e) => setLocalSettings({ ...localSettings, backendUrl: e.target.value })}
+                  placeholder="http://localhost:8000"
                 />
                 <Button
                   variant="outline"
-                  onClick={handleTestConnection}
-                  disabled={connectionStatus === 'testing'}
+                  onClick={handleTestBackend}
+                  disabled={backendStatus === 'testing'}
+                  title="Test backend connection"
                 >
-                  {connectionStatus === 'testing' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  {connectionStatus === 'success' && <CheckCircle2 className="w-4 h-4 mr-2 text-primary" />}
-                  {connectionStatus === 'error' && <XCircle className="w-4 h-4 mr-2 text-destructive" />}
-                  Test
+                  {backendStatus === 'testing' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  {backendStatus === 'success' && <CheckCircle2 className="w-4 h-4 mr-2 text-primary" />}
+                  {backendStatus === 'error' && <XCircle className="w-4 h-4 mr-2 text-destructive" />}
+                  <Server className="w-4 h-4" />
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">Python FastAPI backend URL</p>
+            </div>
+
+            {/* Test AI Connection */}
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>AI Server (llama.cpp)</Label>
+                <p className="text-sm text-muted-foreground">
+                  Test connection to AI model server
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={handleTestLlama}
+                disabled={llamaStatus === 'testing'}
+              >
+                {llamaStatus === 'testing' && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {llamaStatus === 'success' && <CheckCircle2 className="w-4 h-4 mr-2 text-primary" />}
+                {llamaStatus === 'error' && <XCircle className="w-4 h-4 mr-2 text-destructive" />}
+                <Cpu className="w-4 h-4 mr-2" />
+                Test AI
+              </Button>
             </div>
 
             {/* Temperature */}
@@ -236,15 +278,18 @@ export const SettingsModal = ({
                 <h4 className="font-medium">Quick Start Guide</h4>
               </div>
               <div className="text-sm text-muted-foreground space-y-2">
-                <p><strong>1.</strong> Start AI server:</p>
+                <p><strong>1.</strong> Start llama.cpp:</p>
                 <code className="block bg-secondary p-2 rounded text-xs overflow-x-auto">
-                  ./llama-server -m model.gguf --host 127.0.0.1 --port 8080
+                  ./llama-server -m model.gguf --port 8081
                 </code>
-                <p><strong>2.</strong> Serve this UI:</p>
+                <p><strong>2.</strong> Start Python backend:</p>
                 <code className="block bg-secondary p-2 rounded text-xs">
-                  python -m http.server 3000
+                  cd server && python start.py
                 </code>
-                <p><strong>3.</strong> Open http://127.0.0.1:3000</p>
+                <p><strong>3.</strong> Start frontend:</p>
+                <code className="block bg-secondary p-2 rounded text-xs">
+                  npm run dev
+                </code>
               </div>
             </div>
           </TabsContent>

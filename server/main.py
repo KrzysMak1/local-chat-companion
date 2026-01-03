@@ -1,15 +1,19 @@
 """
 Local Chat Companion - FastAPI Backend
-Provides auth, chat storage, and proxy to llama.cpp server
+Provides auth, chat storage (SQLite), and proxy to llama.cpp server
 """
 import os
 import json
 import uuid
+import sqlite3
 import httpx
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from contextlib import asynccontextmanager
+from functools import wraps
+from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,23 +26,91 @@ from google.auth.transport import requests as google_requests
 
 # --- Configuration ---
 DATA_DIR = Path(__file__).parent / "data"
-USERS_FILE = DATA_DIR / "users.json"
-SESSIONS_FILE = DATA_DIR / "sessions.json"
-CHATS_DIR = DATA_DIR / "chats"
+DB_PATH = DATA_DIR / "database.db"
 
 JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = 24 * 7  # 1 week
+JWT_EXPIRE_HOURS = int(os.getenv("TOKEN_EXPIRY_HOURS", "168"))  # 1 week default
 
 LLAMA_BASE_URL = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:8081")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
+# Rate limiting config
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX_ATTEMPTS = 5
+
 # Ensure directories exist
 DATA_DIR.mkdir(exist_ok=True)
-CHATS_DIR.mkdir(exist_ok=True)
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Rate limiting storage (in-memory for simplicity)
+login_attempts: Dict[str, List[float]] = defaultdict(list)
+
+
+# --- SQLite Database ---
+def get_db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    """Initialize SQLite database with tables"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Users table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT,
+            password_hash TEXT,
+            google_id TEXT,
+            auth_provider TEXT DEFAULT 'local',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login TEXT
+        )
+    """)
+    
+    # Chats table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chats (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT 'New chat',
+            pinned INTEGER DEFAULT 0,
+            archived INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    
+    # Messages table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            image_url TEXT,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+        )
+    """)
+    
+    # Create indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)")
+    
+    conn.commit()
+    conn.close()
 
 
 # --- Pydantic Models ---
@@ -53,7 +125,7 @@ class UserLogin(BaseModel):
 
 
 class GoogleAuthRequest(BaseModel):
-    credential: str  # Google ID token
+    credential: str
 
 
 class UserResponse(BaseModel):
@@ -74,22 +146,14 @@ class ChatUpdate(BaseModel):
 
 
 class MessageContent(BaseModel):
-    type: str = "text"  # "text" or "image_url"
+    type: str = "text"
     text: Optional[str] = None
-    image_url: Optional[dict] = None  # {"url": "data:image/..."}
+    image_url: Optional[dict] = None
 
 
 class MessageCreate(BaseModel):
-    content: str | List[MessageContent]  # text or array for images
+    content: str | List[MessageContent]
     analyze_image: bool = False
-
-
-class ChatMessage(BaseModel):
-    id: str
-    role: str
-    content: str | List[Any]
-    timestamp: int
-    image_url: Optional[str] = None
 
 
 class ChatSettings(BaseModel):
@@ -99,29 +163,31 @@ class ChatSettings(BaseModel):
     streaming: bool = True
 
 
-# --- File Storage Helpers ---
-def load_json(path: Path, default: Any = None) -> Any:
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return default if default is not None else {}
+# --- Rate Limiting ---
+def check_rate_limit(identifier: str) -> bool:
+    """Check if the identifier is rate limited. Returns True if allowed."""
+    now = time.time()
+    # Clean old attempts
+    login_attempts[identifier] = [
+        t for t in login_attempts[identifier] 
+        if now - t < RATE_LIMIT_WINDOW
+    ]
+    
+    if len(login_attempts[identifier]) >= RATE_LIMIT_MAX_ATTEMPTS:
+        return False
+    
+    login_attempts[identifier].append(now)
+    return True
 
 
-def save_json(path: Path, data: Any) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def get_user_chats_file(user_id: str) -> Path:
-    return CHATS_DIR / f"{user_id}.json"
-
-
-def load_user_chats(user_id: str) -> List[dict]:
-    return load_json(get_user_chats_file(user_id), [])
-
-
-def save_user_chats(user_id: str, chats: List[dict]) -> None:
-    save_json(get_user_chats_file(user_id), chats)
+def get_rate_limit_remaining(identifier: str) -> int:
+    """Get remaining attempts"""
+    now = time.time()
+    login_attempts[identifier] = [
+        t for t in login_attempts[identifier] 
+        if now - t < RATE_LIMIT_WINDOW
+    ]
+    return max(0, RATE_LIMIT_MAX_ATTEMPTS - len(login_attempts[identifier]))
 
 
 # --- Auth Helpers ---
@@ -151,7 +217,6 @@ async def get_current_user(request: Request) -> dict:
     """Dependency to get current user from JWT cookie or Authorization header"""
     token = request.cookies.get("auth_token")
     
-    # Also check Authorization header for flexibility
     if not token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
@@ -164,21 +229,22 @@ async def get_current_user(request: Request) -> dict:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     
-    users = load_json(USERS_FILE, {})
-    if user_id not in users:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
         raise HTTPException(status_code=401, detail="User not found")
     
-    return {"id": user_id, **users[user_id]}
+    return dict(row)
 
 
 # --- FastAPI App ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize files if they don't exist
-    if not USERS_FILE.exists():
-        save_json(USERS_FILE, {})
-    if not SESSIONS_FILE.exists():
-        save_json(SESSIONS_FILE, {})
+    init_db()
     yield
 
 
@@ -203,27 +269,34 @@ app.add_middleware(
 
 # --- Auth Endpoints ---
 @app.post("/auth/register", response_model=UserResponse)
-async def register(user: UserRegister, response: Response):
-    users = load_json(USERS_FILE, {})
+async def register(user: UserRegister, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "unknown"
+    
+    if not check_rate_limit(f"register:{client_ip}"):
+        raise HTTPException(
+            status_code=429, 
+            detail=f"Too many registration attempts. Try again in {RATE_LIMIT_WINDOW} seconds."
+        )
+    
+    conn = get_db()
+    cursor = conn.cursor()
     
     # Check if username exists
-    for uid, data in users.items():
-        if data.get("username") == user.username:
-            raise HTTPException(status_code=400, detail="Username already exists")
+    cursor.execute("SELECT id FROM users WHERE username = ?", (user.username,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="Username already exists")
     
     user_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
     
-    users[user_id] = {
-        "username": user.username,
-        "password_hash": hash_password(user.password),
-        "created_at": now,
-        "updated_at": now,
-        "last_login": now,
-    }
-    save_json(USERS_FILE, users)
+    cursor.execute("""
+        INSERT INTO users (id, username, password_hash, auth_provider, created_at, updated_at, last_login)
+        VALUES (?, ?, ?, 'local', ?, ?, ?)
+    """, (user_id, user.username, hash_password(user.password), now, now, now))
+    conn.commit()
+    conn.close()
     
-    # Create auth token
     token = create_access_token(user_id)
     response.set_cookie(
         key="auth_token",
@@ -237,28 +310,44 @@ async def register(user: UserRegister, response: Response):
 
 
 @app.post("/auth/login", response_model=UserResponse)
-async def login(user: UserLogin, response: Response):
-    users = load_json(USERS_FILE, {})
+async def login(user: UserLogin, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "unknown"
+    identifier = f"login:{client_ip}:{user.username}"
     
-    # Find user by username
-    user_id = None
-    user_data = None
-    for uid, data in users.items():
-        if data.get("username") == user.username:
-            user_id = uid
-            user_data = data
-            break
+    if not check_rate_limit(identifier):
+        remaining_time = RATE_LIMIT_WINDOW
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {remaining_time} seconds.",
+            headers={"Retry-After": str(remaining_time)}
+        )
     
-    if not user_data or not verify_password(user.password, user_data["password_hash"]):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username = ?", (user.username,))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    user_data = dict(row)
+    
+    if not user_data.get("password_hash") or not verify_password(user.password, user_data["password_hash"]):
+        conn.close()
         raise HTTPException(status_code=401, detail="Invalid username or password")
     
     # Update last login
     now = datetime.utcnow().isoformat()
-    users[user_id]["last_login"] = now
-    save_json(USERS_FILE, users)
+    cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user_data["id"]))
+    conn.commit()
+    conn.close()
     
-    # Create auth token
-    token = create_access_token(user_id)
+    # Clear rate limit on success
+    if identifier in login_attempts:
+        del login_attempts[identifier]
+    
+    token = create_access_token(user_data["id"])
     response.set_cookie(
         key="auth_token",
         value=token,
@@ -268,9 +357,10 @@ async def login(user: UserLogin, response: Response):
     )
     
     return UserResponse(
-        id=user_id,
+        id=user_data["id"],
         username=user_data["username"],
         created_at=user_data["created_at"],
+        auth_provider=user_data.get("auth_provider", "local"),
     )
 
 
@@ -282,57 +372,44 @@ async def logout(response: Response):
 
 @app.post("/auth/google", response_model=UserResponse)
 async def google_auth(auth_request: GoogleAuthRequest, response: Response):
-    """Authenticate with Google ID token"""
     if not GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID in .env")
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
     try:
-        # Verify the Google ID token
         idinfo = id_token.verify_oauth2_token(
             auth_request.credential,
             google_requests.Request(),
             GOOGLE_CLIENT_ID
         )
         
-        # Extract user info from token
         google_user_id = idinfo["sub"]
         email = idinfo.get("email", "")
         name = idinfo.get("name", email.split("@")[0])
         
-        users = load_json(USERS_FILE, {})
+        conn = get_db()
+        cursor = conn.cursor()
         
-        # Check if user exists by Google ID
-        user_id = None
-        user_data = None
-        for uid, data in users.items():
-            if data.get("google_id") == google_user_id:
-                user_id = uid
-                user_data = data
-                break
+        cursor.execute("SELECT * FROM users WHERE google_id = ?", (google_user_id,))
+        row = cursor.fetchone()
         
         now = datetime.utcnow().isoformat()
         
-        if not user_data:
-            # Create new user
+        if not row:
             user_id = str(uuid.uuid4())
-            users[user_id] = {
-                "username": name,
-                "email": email,
-                "google_id": google_user_id,
-                "auth_provider": "google",
-                "created_at": now,
-                "updated_at": now,
-                "last_login": now,
-            }
-            save_json(USERS_FILE, users)
-            user_data = users[user_id]
+            cursor.execute("""
+                INSERT INTO users (id, username, email, google_id, auth_provider, created_at, updated_at, last_login)
+                VALUES (?, ?, ?, ?, 'google', ?, ?, ?)
+            """, (user_id, name, email, google_user_id, now, now, now))
+            conn.commit()
+            user_data = {"id": user_id, "username": name, "created_at": now}
         else:
-            # Update last login
-            users[user_id]["last_login"] = now
-            save_json(USERS_FILE, users)
+            user_data = dict(row)
+            cursor.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user_data["id"]))
+            conn.commit()
         
-        # Create auth token
-        token = create_access_token(user_id)
+        conn.close()
+        
+        token = create_access_token(user_data["id"])
         response.set_cookie(
             key="auth_token",
             value=token,
@@ -342,7 +419,7 @@ async def google_auth(auth_request: GoogleAuthRequest, response: Response):
         )
         
         return UserResponse(
-            id=user_id,
+            id=user_data["id"],
             username=user_data["username"],
             created_at=user_data["created_at"],
             auth_provider="google",
@@ -365,29 +442,50 @@ async def get_me(user: dict = Depends(get_current_user)):
 # --- Chat Endpoints ---
 @app.get("/chats")
 async def list_chats(user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    # Return chats without messages for list view
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT c.*, COUNT(m.id) as message_count
+        FROM chats c
+        LEFT JOIN messages m ON c.id = m.chat_id
+        WHERE c.user_id = ?
+        GROUP BY c.id
+        ORDER BY c.pinned DESC, c.updated_at DESC
+    """, (user["id"],))
+    rows = cursor.fetchall()
+    conn.close()
+    
     return [
         {
-            "id": c["id"],
-            "title": c.get("title", "New chat"),
-            "pinned": c.get("pinned", False),
-            "archived": c.get("archived", False),
-            "created_at": c.get("created_at"),
-            "updated_at": c.get("updated_at"),
-            "message_count": len(c.get("messages", [])),
+            "id": row["id"],
+            "title": row["title"],
+            "pinned": bool(row["pinned"]),
+            "archived": bool(row["archived"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "message_count": row["message_count"],
         }
-        for c in chats
+        for row in rows
     ]
 
 
 @app.post("/chats")
 async def create_chat(chat: ChatCreate, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    chat_id = str(uuid.uuid4())
     now = int(datetime.utcnow().timestamp() * 1000)
     
-    new_chat = {
-        "id": str(uuid.uuid4()),
+    cursor.execute("""
+        INSERT INTO chats (id, user_id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (chat_id, user["id"], chat.title, now, now))
+    conn.commit()
+    conn.close()
+    
+    return {
+        "id": chat_id,
         "title": chat.title,
         "messages": [],
         "pinned": False,
@@ -395,77 +493,143 @@ async def create_chat(chat: ChatCreate, user: dict = Depends(get_current_user)):
         "created_at": now,
         "updated_at": now,
     }
-    
-    chats.insert(0, new_chat)
-    save_user_chats(user["id"], chats)
-    
-    return new_chat
 
 
 @app.get("/chats/{chat_id}")
 async def get_chat(chat_id: str, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    chat = next((c for c in chats if c["id"] == chat_id), None)
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if not chat:
+    cursor.execute("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    chat_row = cursor.fetchone()
+    
+    if not chat_row:
+        conn.close()
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    return chat
+    cursor.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp", (chat_id,))
+    message_rows = cursor.fetchall()
+    conn.close()
+    
+    messages = []
+    for row in message_rows:
+        msg = {
+            "id": row["id"],
+            "role": row["role"],
+            "timestamp": row["timestamp"],
+        }
+        # Parse content (might be JSON array for images)
+        try:
+            msg["content"] = json.loads(row["content"])
+        except:
+            msg["content"] = row["content"]
+        
+        if row["image_url"]:
+            msg["image_url"] = row["image_url"]
+        messages.append(msg)
+    
+    return {
+        "id": chat_row["id"],
+        "title": chat_row["title"],
+        "messages": messages,
+        "pinned": bool(chat_row["pinned"]),
+        "archived": bool(chat_row["archived"]),
+        "created_at": chat_row["created_at"],
+        "updated_at": chat_row["updated_at"],
+    }
 
 
 @app.patch("/chats/{chat_id}")
 async def update_chat(chat_id: str, update: ChatUpdate, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    chat_index = next((i for i, c in enumerate(chats) if c["id"] == chat_id), None)
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if chat_index is None:
+    cursor.execute("SELECT id FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    if not cursor.fetchone():
+        conn.close()
         raise HTTPException(status_code=404, detail="Chat not found")
     
+    updates = []
+    params = []
+    
     if update.title is not None:
-        chats[chat_index]["title"] = update.title
+        updates.append("title = ?")
+        params.append(update.title)
     if update.pinned is not None:
-        chats[chat_index]["pinned"] = update.pinned
+        updates.append("pinned = ?")
+        params.append(1 if update.pinned else 0)
     if update.archived is not None:
-        chats[chat_index]["archived"] = update.archived
+        updates.append("archived = ?")
+        params.append(1 if update.archived else 0)
     
-    chats[chat_index]["updated_at"] = int(datetime.utcnow().timestamp() * 1000)
-    save_user_chats(user["id"], chats)
+    now = int(datetime.utcnow().timestamp() * 1000)
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(chat_id)
     
-    return chats[chat_index]
+    cursor.execute(f"UPDATE chats SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    
+    return {"message": "Chat updated"}
 
 
 @app.delete("/chats/{chat_id}")
 async def delete_chat(chat_id: str, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    chats = [c for c in chats if c["id"] != chat_id]
-    save_user_chats(user["id"], chats)
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+    cursor.execute("DELETE FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    conn.commit()
+    conn.close()
+    
     return {"message": "Chat deleted"}
 
 
 @app.get("/chats/{chat_id}/messages")
 async def get_messages(chat_id: str, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    chat = next((c for c in chats if c["id"] == chat_id), None)
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if not chat:
+    cursor.execute("SELECT id FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    if not cursor.fetchone():
+        conn.close()
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    return chat.get("messages", [])
+    cursor.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp", (chat_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    messages = []
+    for row in rows:
+        msg = {"id": row["id"], "role": row["role"], "timestamp": row["timestamp"]}
+        try:
+            msg["content"] = json.loads(row["content"])
+        except:
+            msg["content"] = row["content"]
+        if row["image_url"]:
+            msg["image_url"] = row["image_url"]
+        messages.append(msg)
+    
+    return messages
 
 
 @app.delete("/chats/{chat_id}/messages/{message_id}")
 async def delete_message(chat_id: str, message_id: str, user: dict = Depends(get_current_user)):
-    chats = load_user_chats(user["id"])
-    chat_index = next((i for i, c in enumerate(chats) if c["id"] == chat_id), None)
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if chat_index is None:
+    cursor.execute("SELECT id FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    if not cursor.fetchone():
+        conn.close()
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    chats[chat_index]["messages"] = [
-        m for m in chats[chat_index].get("messages", []) if m["id"] != message_id
-    ]
-    chats[chat_index]["updated_at"] = int(datetime.utcnow().timestamp() * 1000)
-    save_user_chats(user["id"], chats)
+    cursor.execute("DELETE FROM messages WHERE id = ? AND chat_id = ?", (message_id, chat_id))
+    cursor.execute("UPDATE chats SET updated_at = ? WHERE id = ?", 
+                   (int(datetime.utcnow().timestamp() * 1000), chat_id))
+    conn.commit()
+    conn.close()
     
     return {"message": "Message deleted"}
 
@@ -478,56 +642,59 @@ async def send_message(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Send a message and get AI response"""
-    chats = load_user_chats(user["id"])
-    chat_index = next((i for i, c in enumerate(chats) if c["id"] == chat_id), None)
+    conn = get_db()
+    cursor = conn.cursor()
     
-    if chat_index is None:
+    cursor.execute("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
+    chat_row = cursor.fetchone()
+    
+    if not chat_row:
+        conn.close()
         raise HTTPException(status_code=404, detail="Chat not found")
     
     now = int(datetime.utcnow().timestamp() * 1000)
     
     # Build user message content
-    user_msg_content: Any = message.content
     image_url = None
-    
     if isinstance(message.content, list):
-        # Has image - keep as array for llama.cpp
-        user_msg_content = message.content
-        # Extract image URL for storage
-        for item in message.content:
-            if isinstance(item, dict) and item.get("type") == "image_url":
-                image_url = item.get("image_url", {}).get("url")
-    elif message.analyze_image:
-        # Wrap text in proper format
-        user_msg_content = message.content
-    
-    # Create user message
-    user_message = {
-        "id": str(uuid.uuid4()),
-        "role": "user",
-        "content": message.content if isinstance(message.content, str) else [
+        content_str = json.dumps([
             {"type": c.type, "text": c.text, "image_url": c.image_url}
             if isinstance(c, MessageContent) else c
             for c in message.content
-        ],
-        "timestamp": now,
-    }
-    if image_url:
-        user_message["image_url"] = image_url
+        ])
+        for item in message.content:
+            if isinstance(item, MessageContent) and item.type == "image_url" and item.image_url:
+                image_url = item.image_url.get("url")
+    else:
+        content_str = message.content
     
-    chats[chat_index]["messages"].append(user_message)
+    # Save user message
+    user_msg_id = str(uuid.uuid4())
+    cursor.execute("""
+        INSERT INTO messages (id, chat_id, role, content, image_url, timestamp)
+        VALUES (?, ?, 'user', ?, ?, ?)
+    """, (user_msg_id, chat_id, content_str, image_url, now))
     
     # Auto-title on first message
-    if len(chats[chat_index]["messages"]) == 1 and chats[chat_index]["title"] == "New chat":
+    cursor.execute("SELECT COUNT(*) FROM messages WHERE chat_id = ?", (chat_id,))
+    msg_count = cursor.fetchone()[0]
+    
+    if msg_count == 1 and chat_row["title"] == "New chat":
         text_content = message.content if isinstance(message.content, str) else next(
             (c.text for c in message.content if isinstance(c, MessageContent) and c.text),
             "New chat"
         )
-        chats[chat_index]["title"] = (text_content[:50] + "...") if len(text_content) > 50 else text_content
+        new_title = (text_content[:50] + "...") if len(text_content) > 50 else text_content
+        cursor.execute("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?", (new_title, now, chat_id))
+    else:
+        cursor.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
     
-    chats[chat_index]["updated_at"] = now
-    save_user_chats(user["id"], chats)
+    conn.commit()
+    
+    # Get all messages for context
+    cursor.execute("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp", (chat_id,))
+    all_messages = cursor.fetchall()
+    conn.close()
     
     # Get settings from request
     settings = {
@@ -537,7 +704,6 @@ async def send_message(
         "streaming": True,
     }
     
-    # Try to parse settings from headers
     if request.headers.get("X-Chat-Settings"):
         try:
             settings.update(json.loads(request.headers.get("X-Chat-Settings")))
@@ -547,11 +713,13 @@ async def send_message(
     # Build messages for llama.cpp
     api_messages = [{"role": "system", "content": settings["system_prompt"]}]
     
-    for msg in chats[chat_index]["messages"]:
-        content = msg["content"]
-        # Format for llama.cpp with images
+    for msg in all_messages:
+        try:
+            content = json.loads(msg["content"])
+        except:
+            content = msg["content"]
+        
         if isinstance(content, list):
-            # Convert to OpenAI-compatible format
             formatted_content = []
             for item in content:
                 if isinstance(item, dict):
@@ -566,7 +734,7 @@ async def send_message(
         else:
             api_messages.append({"role": msg["role"], "content": content})
     
-    # Call llama.cpp
+    # Stream response from llama.cpp
     async def stream_response():
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -581,6 +749,11 @@ async def send_message(
                         "stream": settings["streaming"],
                     },
                 ) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        yield f"data: {json.dumps({'error': f'Model error: {error_text.decode()}'})}\n\n"
+                        return
+                    
                     full_content = ""
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
@@ -598,23 +771,23 @@ async def send_message(
                                 pass
                     
                     # Save assistant message
-                    chats_updated = load_user_chats(user["id"])
-                    assistant_message = {
-                        "id": str(uuid.uuid4()),
-                        "role": "assistant",
-                        "content": full_content,
-                        "timestamp": int(datetime.utcnow().timestamp() * 1000),
-                    }
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    assistant_msg_id = str(uuid.uuid4())
+                    assistant_timestamp = int(datetime.utcnow().timestamp() * 1000)
                     
-                    for c in chats_updated:
-                        if c["id"] == chat_id:
-                            c["messages"].append(assistant_message)
-                            c["updated_at"] = assistant_message["timestamp"]
-                            break
+                    cursor.execute("""
+                        INSERT INTO messages (id, chat_id, role, content, timestamp)
+                        VALUES (?, ?, 'assistant', ?, ?)
+                    """, (assistant_msg_id, chat_id, full_content, assistant_timestamp))
+                    cursor.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (assistant_timestamp, chat_id))
+                    conn.commit()
+                    conn.close()
                     
-                    save_user_chats(user["id"], chats_updated)
                     yield f"data: [DONE]\n\n"
                     
+        except httpx.ConnectError:
+            yield f"data: {json.dumps({'error': 'Cannot connect to AI server. Make sure llama.cpp is running.'})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
     
@@ -622,10 +795,7 @@ async def send_message(
         return StreamingResponse(
             stream_response(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     else:
         # Non-streaming response
@@ -645,49 +815,55 @@ async def send_message(
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 
                 # Save assistant message
-                assistant_message = {
-                    "id": str(uuid.uuid4()),
-                    "role": "assistant",
-                    "content": content,
-                    "timestamp": int(datetime.utcnow().timestamp() * 1000),
+                conn = get_db()
+                cursor = conn.cursor()
+                assistant_msg_id = str(uuid.uuid4())
+                assistant_timestamp = int(datetime.utcnow().timestamp() * 1000)
+                
+                cursor.execute("""
+                    INSERT INTO messages (id, chat_id, role, content, timestamp)
+                    VALUES (?, ?, 'assistant', ?, ?)
+                """, (assistant_msg_id, chat_id, content, assistant_timestamp))
+                cursor.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (assistant_timestamp, chat_id))
+                conn.commit()
+                conn.close()
+                
+                return {
+                    "message": {"id": assistant_msg_id, "role": "assistant", "content": content, "timestamp": assistant_timestamp},
+                    "user_message": {"id": user_msg_id, "role": "user", "content": message.content, "timestamp": now},
                 }
                 
-                chats[chat_index]["messages"].append(assistant_message)
-                chats[chat_index]["updated_at"] = assistant_message["timestamp"]
-                save_user_chats(user["id"], chats)
-                
-                return {"message": assistant_message, "user_message": user_message}
-                
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Cannot connect to AI server")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/chats/{chat_id}/stop")
 async def stop_generation(chat_id: str, user: dict = Depends(get_current_user)):
-    """Endpoint to signal stop - client should use AbortController"""
     return {"message": "Stop signal received"}
 
 
 # --- Health & Llama Proxy ---
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "database": "sqlite"}
 
 
 @app.get("/api/llama/health")
 async def llama_health():
-    """Check if llama.cpp server is reachable"""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{LLAMA_BASE_URL}/health")
             return response.json()
+    except httpx.ConnectError:
+        return {"status": "error", "message": "Cannot connect to llama.cpp server"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/llama/models")
 async def llama_models():
-    """Get available models from llama.cpp"""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{LLAMA_BASE_URL}/v1/models")
