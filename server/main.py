@@ -17,6 +17,8 @@ from fastapi.responses import StreamingResponse
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from pydantic import BaseModel, Field
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 # --- Configuration ---
 DATA_DIR = Path(__file__).parent / "data"
@@ -29,6 +31,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24 * 7  # 1 week
 
 LLAMA_BASE_URL = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:8081")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 # Ensure directories exist
 DATA_DIR.mkdir(exist_ok=True)
@@ -49,10 +52,15 @@ class UserLogin(BaseModel):
     password: str
 
 
+class GoogleAuthRequest(BaseModel):
+    credential: str  # Google ID token
+
+
 class UserResponse(BaseModel):
     id: str
     username: str
     created_at: str
+    auth_provider: Optional[str] = "local"
 
 
 class ChatCreate(BaseModel):
@@ -272,12 +280,85 @@ async def logout(response: Response):
     return {"message": "Logged out"}
 
 
+@app.post("/auth/google", response_model=UserResponse)
+async def google_auth(auth_request: GoogleAuthRequest, response: Response):
+    """Authenticate with Google ID token"""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured. Set GOOGLE_CLIENT_ID in .env")
+    
+    try:
+        # Verify the Google ID token
+        idinfo = id_token.verify_oauth2_token(
+            auth_request.credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID
+        )
+        
+        # Extract user info from token
+        google_user_id = idinfo["sub"]
+        email = idinfo.get("email", "")
+        name = idinfo.get("name", email.split("@")[0])
+        
+        users = load_json(USERS_FILE, {})
+        
+        # Check if user exists by Google ID
+        user_id = None
+        user_data = None
+        for uid, data in users.items():
+            if data.get("google_id") == google_user_id:
+                user_id = uid
+                user_data = data
+                break
+        
+        now = datetime.utcnow().isoformat()
+        
+        if not user_data:
+            # Create new user
+            user_id = str(uuid.uuid4())
+            users[user_id] = {
+                "username": name,
+                "email": email,
+                "google_id": google_user_id,
+                "auth_provider": "google",
+                "created_at": now,
+                "updated_at": now,
+                "last_login": now,
+            }
+            save_json(USERS_FILE, users)
+            user_data = users[user_id]
+        else:
+            # Update last login
+            users[user_id]["last_login"] = now
+            save_json(USERS_FILE, users)
+        
+        # Create auth token
+        token = create_access_token(user_id)
+        response.set_cookie(
+            key="auth_token",
+            value=token,
+            httponly=True,
+            samesite="lax",
+            max_age=JWT_EXPIRE_HOURS * 3600,
+        )
+        
+        return UserResponse(
+            id=user_id,
+            username=user_data["username"],
+            created_at=user_data["created_at"],
+            auth_provider="google",
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Google token: {str(e)}")
+
+
 @app.get("/auth/me", response_model=UserResponse)
 async def get_me(user: dict = Depends(get_current_user)):
     return UserResponse(
         id=user["id"],
         username=user["username"],
         created_at=user["created_at"],
+        auth_provider=user.get("auth_provider", "local"),
     )
 
 

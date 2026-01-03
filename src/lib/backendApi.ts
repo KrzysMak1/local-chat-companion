@@ -45,6 +45,22 @@ export const authApi = {
     });
   },
 
+  async googleAuth(credential: string): Promise<User> {
+    const response = await fetch(`${getBackendUrl()}/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ credential }),
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Google authentication failed');
+    }
+    
+    return response.json();
+  },
+
   async getMe(): Promise<User | null> {
     try {
       const response = await fetch(`${getBackendUrl()}/auth/me`, {
