@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
-import { Send, Square, Paperclip, X, Image as ImageIcon } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Send, Square, Paperclip, X, Image as ImageIcon, Clipboard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { toast } from 'sonner';
 
 interface ChatInputProps {
   onSend: (content: string, imageDataUrl?: string) => void;
@@ -37,19 +38,16 @@ export const ChatInput = ({ onSend, isLoading, onStop }: ChatInputProps) => {
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processImageFile = useCallback((file: File) => {
     // Validate file type
     if (!file.type.startsWith('image/')) {
-      alert('Please select an image file');
+      toast.error('Please select an image file');
       return;
     }
 
     // Validate file size (max 10MB)
     if (file.size > 10 * 1024 * 1024) {
-      alert('Image must be less than 10MB');
+      toast.error('Image must be less than 10MB');
       return;
     }
 
@@ -57,14 +55,40 @@ export const ChatInput = ({ onSend, isLoading, onStop }: ChatInputProps) => {
     const reader = new FileReader();
     reader.onload = () => {
       setImagePreview(reader.result as string);
+      toast.success('Image attached');
     };
     reader.readAsDataURL(file);
+  }, []);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    processImageFile(file);
 
     // Reset input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
+
+  // Handle paste from clipboard (Ctrl+V)
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          processImageFile(file);
+        }
+        return;
+      }
+    }
+  }, [processImageFile]);
 
   const removeImage = () => {
     setImagePreview(null);
@@ -126,7 +150,8 @@ export const ChatInput = ({ onSend, isLoading, onStop }: ChatInputProps) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={imagePreview ? "Add a message about the image..." : "Message ChatGPT..."}
+            onPaste={handlePaste}
+            placeholder={imagePreview ? "Add a message about the image..." : "Message... (Ctrl+V to paste image)"}
             className="min-h-[44px] max-h-[200px] resize-none border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 pr-12"
             rows={1}
             disabled={isLoading}
@@ -155,8 +180,9 @@ export const ChatInput = ({ onSend, isLoading, onStop }: ChatInputProps) => {
           </div>
         </div>
         
-        <p className="text-xs text-center text-muted-foreground mt-2">
-          ChatGPT Clone • Connected to local llama.cpp server
+        <p className="text-xs text-center text-muted-foreground mt-2 flex items-center justify-center gap-2">
+          <Clipboard className="w-3 h-3" />
+          Ctrl+V to paste images • Local AI Chat
         </p>
       </div>
     </div>

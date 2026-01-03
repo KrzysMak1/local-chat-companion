@@ -1,288 +1,295 @@
 # Local Chat Companion
 
-A privacy-focused chat application that connects to your local AI server (llama.cpp) with support for multiple chats, image uploads, and server-side authentication.
+A fully offline, privacy-focused ChatGPT-like application with server-side authentication, multiple chats, and image support. Connects to your local llama.cpp server.
 
-## Features
+## ✨ Features
 
-- **Server-side authentication**: Secure login with bcrypt password hashing
-- **Google Sign-In**: Optional OAuth authentication with Google
-- **Multiple chats**: Create and manage multiple conversations
-- **Split view**: Open two chats side-by-side for parallel conversations
-- **Image support**: Upload images and get AI analysis (requires vision-capable model)
-- **Multi-tab support**: Work across multiple browser tabs with the same account
-- **Offline-first**: Works entirely locally without internet connection
-- **ChatGPT-like UI**: Familiar interface with sidebar, chat history, and settings
+- **🔐 Server-side authentication** - Secure login with bcrypt password hashing (SQLite database)
+- **🔑 Google Sign-In** - Optional OAuth authentication
+- **💬 Multiple chats** - Create and manage multiple conversations
+- **🖼️ Image support** - Upload images via file picker OR paste with Ctrl+V
+- **📱 Split view** - Open two chats side-by-side
+- **🔄 Multi-tab support** - Work across multiple browser tabs
+- **📴 Fully offline** - Works without internet connection
+- **⚡ Rate limiting** - Protection against brute-force attacks
 
-## Prerequisites
+## 📋 Prerequisites
 
-- **Node.js 18+** for the frontend
-- **Python 3.10+** for the backend
-- **llama.cpp server** running with OpenAI-compatible API
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| Node.js | 18+ | Frontend development |
+| Python | 3.10+ | Backend server |
+| llama.cpp | Latest | AI model server |
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Start llama.cpp Server
+### Option 1: One-Command Start (Recommended)
 
 ```bash
-# Example with llama.cpp server
-./llama-server -m your-model.gguf --port 8081 --host 127.0.0.1
+# Terminal 1: Start backend
+cd server && python start.py
 
-# For vision models (image support)
-./llama-server -m llava-model.gguf --mmproj mmproj-model.gguf --port 8081
+# Terminal 2: Start frontend
+npm run dev
 ```
 
-The server should be accessible at `http://127.0.0.1:8081`.
+### Option 2: Step-by-Step
 
-### 2. Start the Python Backend
+#### 1️⃣ Start llama.cpp Server
+
+```bash
+# Basic text model
+./llama-server -m your-model.gguf --port 8081 --host 127.0.0.1
+
+# Vision model (for image support)
+./llama-server -m llava-v1.6-mistral-7b.Q4_K_M.gguf \
+  --mmproj mmproj-model-f16.gguf \
+  --port 8081 --host 127.0.0.1
+```
+
+#### 2️⃣ Start Python Backend
 
 ```bash
 cd server
 
-# Create virtual environment (recommended)
+# Create virtual environment (first time only)
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure environment (optional)
+# Configure (optional)
 cp .env.example .env
-# Edit .env to customize LLAMA_BASE_URL, JWT_SECRET, GOOGLE_CLIENT_ID, etc.
+# Edit .env as needed
 
-# Run the backend
-uvicorn main:app --reload --port 8000
+# Start server
+python start.py
+# OR: uvicorn main:app --reload --port 8000
 ```
 
-The backend API will be available at `http://localhost:8000`.
-
-### 3. Start the Frontend
+#### 3️⃣ Start Frontend
 
 ```bash
-# In the project root directory
 npm install
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:8080` (or the port shown in terminal).
+#### 4️⃣ Open Browser
 
-### 4. Create an Account and Start Chatting
+Navigate to `http://localhost:8080`, register an account, and start chatting!
 
-1. Open the frontend URL in your browser
-2. Click "Register" to create a new account (or use Google Sign-In if configured)
-3. Log in with your credentials
-4. Start a new chat and begin conversing!
+## 🔌 Port Configuration
 
-## Google Sign-In Setup (Optional)
+| Service | Default Port | Environment Variable |
+|---------|-------------|---------------------|
+| Frontend | 8080 | - |
+| Backend | 8000 | `PORT` |
+| llama.cpp | 8081 | `LLAMA_BASE_URL` |
 
-To enable "Sign in with Google":
-
-### 1. Create Google Cloud Project
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Navigate to **APIs & Services** > **Credentials**
-
-### 2. Create OAuth 2.0 Client ID
-
-1. Click **Create Credentials** > **OAuth client ID**
-2. Select **Web application**
-3. Set name (e.g., "Local Chat Companion")
-4. Add **Authorized JavaScript origins**:
-   - `http://localhost:8080`
-   - `http://localhost:5173`
-   - `http://127.0.0.1:8080`
-5. Click **Create**
-6. Copy the **Client ID** (looks like: `123456789-abc.apps.googleusercontent.com`)
-
-### 3. Configure Backend
-
-Add to `server/.env`:
-
-```env
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
-
-### 4. Configure Frontend
-
-Create `.env` in project root:
-
-```env
-VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-```
-
-### 5. Restart Both Servers
-
-The Google Sign-In button will now appear on the login screen.
-
-## Configuration
+## ⚙️ Configuration
 
 ### Backend Environment Variables
 
-Create a `.env` file in the `/server` directory:
+Create `server/.env`:
 
 ```env
 # llama.cpp server URL
 LLAMA_BASE_URL=http://127.0.0.1:8081
 
-# JWT secret for authentication (change in production!)
-JWT_SECRET=your-super-secret-jwt-key-change-this
+# JWT secret (CHANGE THIS!)
+JWT_SECRET=your-super-secret-key-change-in-production
 
-# Token expiration in hours
-TOKEN_EXPIRY_HOURS=24
+# Token expiration (hours)
+TOKEN_EXPIRY_HOURS=168
 
 # Google OAuth (optional)
-GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 ```
 
 ### Frontend Environment Variables
 
-Create a `.env` file in the project root:
+Create `.env` in project root (optional):
 
 ```env
-# Google OAuth (optional - must match backend)
-VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+# Google OAuth (must match backend)
+VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 ```
 
-### Frontend Settings
+### In-App Settings
 
-In the app, click the **Settings** icon in the sidebar to configure:
+Click the ⚙️ icon in the sidebar to configure:
+- **Backend URL** - Python backend address
+- **Temperature** - AI creativity (0.0 - 2.0)
+- **Max Tokens** - Response length limit
+- **Streaming** - Real-time token display
+- **Theme** - Light/dark mode
 
-- **Backend URL**: URL of the Python backend (default: `http://localhost:8000`)
-- **Temperature**: AI response creativity (0.0 - 2.0)
-- **Max Tokens**: Maximum response length
-- **Streaming**: Enable/disable streaming responses
-- **Model**: Select the model to use (if multiple available)
+## 🖼️ Image Support
 
-## Architecture
+### Two Ways to Attach Images
+
+1. **📎 File Picker** - Click the paperclip icon
+2. **⌨️ Ctrl+V Paste** - Paste from clipboard directly
+
+Supported formats: PNG, JPG, JPEG, WEBP, GIF (max 10MB)
+
+> **Note:** Image analysis requires a vision-capable model (e.g., LLaVA, Obsidian)
+
+## 🔐 Google Sign-In Setup (Optional)
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create/select project → **APIs & Services** → **Credentials**
+3. **Create Credentials** → **OAuth client ID** → **Web application**
+4. Add Authorized JavaScript origins:
+   - `http://localhost:8080`
+   - `http://localhost:5173`
+5. Copy Client ID to both `server/.env` and root `.env`
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │                 │     │                 │     │                 │
 │    Frontend     │────▶│  Python Backend │────▶│  llama.cpp      │
-│    (React)      │     │    (FastAPI)    │     │    Server       │
+│    (React)      │     │   (FastAPI)     │     │    Server       │
 │                 │◀────│                 │◀────│                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
      :8080                    :8000                   :8081
+
+     Vite + React          SQLite + JWT           OpenAI-compatible
+     Tailwind CSS          Rate limiting          API endpoint
 ```
 
-- **Frontend**: React + Vite + Tailwind CSS
-- **Backend**: Python FastAPI with JWT auth + Google OAuth
-- **AI Server**: llama.cpp with OpenAI-compatible API
-
-## API Endpoints
+## 📡 API Endpoints
 
 ### Authentication
 
-| Method | Endpoint          | Description                |
-|--------|-------------------|----------------------------|
-| POST   | `/auth/register`  | Create new account         |
-| POST   | `/auth/login`     | Login with username/pass   |
-| POST   | `/auth/google`    | Login with Google ID token |
-| POST   | `/auth/logout`    | Logout (clears token)      |
-| GET    | `/auth/me`        | Get current user info      |
+| Method | Endpoint | Description | Rate Limited |
+|--------|----------|-------------|--------------|
+| POST | `/auth/register` | Create account | ✅ 5/min |
+| POST | `/auth/login` | Login | ✅ 5/min per user |
+| POST | `/auth/google` | Google OAuth | ❌ |
+| POST | `/auth/logout` | Logout | ❌ |
+| GET | `/auth/me` | Current user | ❌ |
 
 ### Chats
 
-| Method | Endpoint                        | Description              |
-|--------|---------------------------------|--------------------------|
-| GET    | `/chats`                        | List all user's chats    |
-| POST   | `/chats`                        | Create new chat          |
-| GET    | `/chats/{id}`                   | Get chat with messages   |
-| PUT    | `/chats/{id}`                   | Update chat (title, etc) |
-| DELETE | `/chats/{id}`                   | Delete chat              |
-| POST   | `/chats/{id}/messages`          | Add message to chat      |
-| DELETE | `/chats/{id}/messages/{msg_id}` | Delete a message         |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/chats` | List all chats |
+| POST | `/chats` | Create chat |
+| GET | `/chats/{id}` | Get chat + messages |
+| PATCH | `/chats/{id}` | Update chat |
+| DELETE | `/chats/{id}` | Delete chat |
+| POST | `/chats/{id}/messages` | Send message + get AI response |
+| DELETE | `/chats/{id}/messages/{msg_id}` | Delete message |
 
-### AI Proxy
+### Health
 
-| Method | Endpoint    | Description                      |
-|--------|-------------|----------------------------------|
-| POST   | `/api/chat` | Send message, get AI response    |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Backend health |
+| GET | `/api/llama/health` | llama.cpp health |
+| GET | `/api/llama/models` | Available models |
 
-## Image Support
-
-To use image analysis:
-
-1. Run a vision-capable model (e.g., LLaVA, Obsidian)
-2. Click the 📎 (paperclip) icon in the chat input
-3. Select an image (PNG, JPG, WEBP, GIF - max 10MB)
-4. Add your question and send
-
-The image is sent as base64 to the backend, which forwards it to llama.cpp in OpenAI vision format.
-
-## Troubleshooting
+## 🔧 Troubleshooting
 
 ### CORS Errors
 
-If you see CORS errors in the browser console:
+```
+Access to fetch blocked by CORS policy
+```
 
-1. Make sure the backend is running on port 8000
-2. Check that frontend URL is in the backend's CORS origins
-3. Try clearing browser cache and reloading
+**Solution:**
+1. Ensure backend is running on port 8000
+2. Access frontend via `localhost`, not `127.0.0.1`
+3. Clear browser cache
 
-### "Failed to fetch" or Connection Refused
+### Connection Refused
 
-1. Verify the backend is running: `curl http://localhost:8000/health`
-2. Verify llama.cpp is running: `curl http://127.0.0.1:8081/v1/models`
-3. Check firewall settings if on Windows
+```
+Failed to fetch / ECONNREFUSED
+```
 
-### No Response from AI
+**Solution:**
+```bash
+# Check backend
+curl http://localhost:8000/health
 
-1. Check llama.cpp server logs for errors
-2. Verify the model is loaded correctly
-3. Try reducing `max_tokens` in settings
-4. Check if streaming is causing issues (try disabling it)
+# Check llama.cpp
+curl http://127.0.0.1:8081/v1/models
+```
+
+### No AI Response
+
+**Checklist:**
+1. Is llama.cpp running? Check terminal output
+2. Is model loaded? Look for "model loaded" message
+3. Try disabling streaming in settings
+4. Reduce max_tokens to 512
 
 ### Authentication Issues
 
-1. Clear localStorage in browser dev tools
-2. Delete `server/data/sessions.json` and restart backend
-3. Re-register a new account
-
-### Google Sign-In Not Working
-
-1. Verify `GOOGLE_CLIENT_ID` is set in both backend `.env` and frontend `.env`
-2. Check that the client ID matches in both files
-3. Ensure `http://localhost:8080` is in Authorized JavaScript origins in Google Cloud Console
-4. Check browser console for detailed error messages
-5. Make sure you're accessing from `localhost`, not `127.0.0.1`
+**Solution:**
+1. Clear browser localStorage
+2. Delete `server/data/database.db`
+3. Restart backend and re-register
 
 ### Port Already in Use
 
 ```bash
-# Find process using port 8000
-lsof -i :8000  # macOS/Linux
-netstat -ano | findstr :8000  # Windows
+# macOS/Linux
+lsof -i :8000
+kill -9 <PID>
 
-# Kill the process or use a different port
-uvicorn main:app --port 8001
+# Windows
+netstat -ano | findstr :8000
+taskkill /PID <PID> /F
 ```
 
-## Data Storage
+### Image Not Analyzed
 
-All data is stored locally:
+**Possible causes:**
+1. Model doesn't support vision → Use LLaVA or similar
+2. Image too large → Resize to under 10MB
+3. Check backend logs for errors
 
-- **Users**: `server/data/users.json` (passwords are bcrypt hashed, Google accounts linked by google_id)
-- **Sessions**: `server/data/sessions.json`
-- **Chats**: `server/data/chats/{user_id}.json`
+### Rate Limited
 
-To reset all data, delete the contents of `server/data/` (keep `.gitkeep`).
+```
+Too many login attempts
+```
 
-## Security Notes
+**Solution:** Wait 60 seconds, or restart the backend to clear rate limits.
 
-- Passwords are hashed with bcrypt (never stored in plain text)
-- Google accounts are verified using Google's official OAuth library
-- JWT tokens are used for session management
-- All API endpoints require authentication (except `/auth/register`, `/auth/login`, `/auth/google`)
-- CORS is configured for localhost only by default
+## 💾 Data Storage
 
-For production use:
+All data stored locally in `server/data/`:
+
+| File | Contents |
+|------|----------|
+| `database.db` | SQLite database (users, chats, messages) |
+
+**Reset all data:**
+```bash
+rm server/data/database.db
+```
+
+## 🔒 Security Notes
+
+- ✅ Passwords hashed with bcrypt (never plaintext)
+- ✅ JWT tokens for session management
+- ✅ HttpOnly cookies (XSS protection)
+- ✅ Rate limiting on auth endpoints
+- ✅ CORS configured for localhost only
+
+**For production:**
 1. Change `JWT_SECRET` to a strong random value
 2. Use HTTPS
 3. Configure proper CORS origins
-4. Consider adding rate limiting
-5. Update Google OAuth authorized origins for your domain
+4. Consider adding Argon2 for password hashing
 
-## License
+## 📄 License
 
 MIT
